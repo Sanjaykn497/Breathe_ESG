@@ -7,16 +7,17 @@ User = get_user_model()
 
 class DevAuthenticationMiddleware:
     """
-    Development-only middleware that automatically authenticates a mock user
-    based on the X-Mock-User header or falls back to a default Analyst.
-    Only active in development (DEBUG = True).
+    Mock authentication middleware for development and demo deployments.
+    Active when DEMO_MODE=True (in dev this defaults to DEBUG).
+    Intercepts X-Mock-User header to auto-create and authenticate users.
     """
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
         from django.conf import settings
-        if settings.DEBUG:
+        # Active in DEBUG mode OR when DEMO_MODE is explicitly enabled
+        if getattr(settings, "DEMO_MODE", False):
             mock_user_header = request.headers.get("X-Mock-User")
             
             email = "analyst@breathe.io"
@@ -43,7 +44,7 @@ class DevAuthenticationMiddleware:
                     "organization": org,
                     "role": role,
                     "is_active": True,
-                }
+                },
             )
             
             # If the user role has changed (e.g. analyst logged in then admin), update it
@@ -60,7 +61,8 @@ from rest_framework.authentication import SessionAuthentication
 
 class CsrfExemptSessionAuthentication(SessionAuthentication):
     """
-    Custom SessionAuthentication that bypasses CSRF checks in development.
+    Custom SessionAuthentication that bypasses CSRF checks.
+    Required for the mock-auth demo deployment where there is no real login flow.
     """
     def enforce_csrf(self, request):
         return
