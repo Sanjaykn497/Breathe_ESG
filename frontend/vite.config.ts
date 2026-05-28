@@ -9,6 +9,11 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    // Output to dist/ (default) — Django collectstatic picks this up
+    outDir: "dist",
+    assetsDir: "assets",
+  },
   server: {
     port: 5173,
     proxy: {
