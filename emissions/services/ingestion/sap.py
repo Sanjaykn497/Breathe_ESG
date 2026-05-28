@@ -15,13 +15,32 @@ PLANT_CODE_MAP: dict[str, str] = {
 }
 
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 class SAPIngestionService(BaseIngestionService):
     source_type = "SAP"
 
     def parse_rows(self, raw_input: str) -> list[dict]:
         """Accepts CSV string as received from SAP export."""
-        reader = csv.DictReader(io.StringIO(raw_input))
-        return [dict(row) for row in reader]
+        if not raw_input or not raw_input.strip():
+            raise DjangoValidationError("SAP upload file is empty.")
+        
+        try:
+            reader = csv.DictReader(io.StringIO(raw_input))
+            rows = [dict(row) for row in reader]
+        except Exception as e:
+            raise DjangoValidationError(f"Invalid CSV format: {e}")
+
+        if not rows:
+            raise DjangoValidationError("SAP upload CSV contains no data rows.")
+
+        first_row = rows[0]
+        required = {"plant_code", "quantity", "document_date"}
+        missing = required - set(first_row.keys())
+        if missing:
+            raise DjangoValidationError(f"Missing required CSV columns: {', '.join(missing)}")
+
+        return rows
 
     def extract_fields(self, row: dict) -> dict:
         plant_code = row.get("plant_code", "").strip()

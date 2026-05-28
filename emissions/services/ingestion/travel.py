@@ -8,14 +8,36 @@ from .base import BaseIngestionService
 HAUL_DISTANCE_THRESHOLD_KM = Decimal("3700")
 
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 class TravelIngestionService(BaseIngestionService):
     source_type = "TRAVEL"
 
     def parse_rows(self, raw_input) -> list[dict]:
         """Accepts a list of dicts from the mock travel API."""
+        if not raw_input:
+            raise DjangoValidationError("Travel payload is empty.")
+            
         if isinstance(raw_input, list):
-            return raw_input
-        return raw_input.get("records", [])
+            rows = raw_input
+        elif isinstance(raw_input, dict):
+            rows = raw_input.get("records", [])
+        else:
+            raise DjangoValidationError("Invalid travel records format: expected list or JSON object.")
+
+        if not rows:
+            raise DjangoValidationError("Travel payload contains no records.")
+
+        first_row = rows[0]
+        if not isinstance(first_row, dict):
+            raise DjangoValidationError("Travel records must be JSON objects.")
+
+        required = {"travel_type", "travel_date"}
+        missing = required - set(first_row.keys())
+        if missing:
+            raise DjangoValidationError(f"Missing required fields in travel records: {', '.join(missing)}")
+
+        return rows
 
     def extract_fields(self, row: dict) -> dict:
         travel_type = row.get("travel_type", "").upper()
