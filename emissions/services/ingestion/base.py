@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from emissions.models import DataSource, RawRecord, EmissionRecord
 from emissions.enums import IngestionStatus
@@ -33,15 +34,24 @@ class BaseIngestionService:
 
         for idx, row in enumerate(rows):
             try:
-                raw_record = self._store_raw(data_source, row, idx)
-                self._process_row(data_source, raw_record, row)
+                with transaction.atomic():
+                    raw_record = self._store_raw(data_source, row, idx)
+                    self._process_row(data_source, raw_record, row)
                 success += 1
+            except DjangoValidationError as exc:
+                msg = exc.messages[0] if hasattr(exc, "messages") else str(exc)
+                errors.append({"row": idx, "error": msg})
             except Exception as exc:
                 errors.append({"row": idx, "error": str(exc)})
 
+        if success == 0 and errors:
+            # Entire file is invalid (no successful rows)
+            first_err = errors[0]["error"]
+            raise DjangoValidationError(f"Entire file is invalid. First error: {first_err}")
+
         data_source.row_count       = success
         data_source.ingestion_status = (
-            IngestionStatus.COMPLETED if not errors else IngestionStatus.FAILED
+            IngestionStatus.COMPLETED if success > 0 or not errors else IngestionStatus.FAILED
         )
         data_source.error_summary = errors or None
         data_source.save(update_fields=["row_count", "ingestion_status", "error_summary"])
@@ -89,8 +99,33 @@ class BaseIngestionService:
 
     # ── Steps 3-8: Full normalization + persistence ───────────────
     def _process_row(self, data_source: DataSource, raw_record: RawRecord, row: dict):
-        fields       = self.extract_fields(row)
-        period_start, period_end = self.get_period(row)
+        try:
+            fields = self.extract_fields(row)
+        except Exception as e:
+            raise DjangoValidationError(f"Failed to parse fields: {e}")
+
+        try:
+            period_start, period_end = self.get_period(row)
+        except Exception as e:
+            raise DjangoValidationError(f"Failed to parse period dates: {e}")
+
+        # Python-level field validation
+        quantity = fields.get("quantity")
+        if quantity is None:
+            raise DjangoValidationError("Quantity is missing.")
+        try:
+            qty_dec = Decimal(str(quantity))
+        except Exception:
+            raise DjangoValidationError(f"Quantity must be a valid number: '{quantity}'")
+            
+        if qty_dec < 0:
+            raise DjangoValidationError(f"Quantity cannot be negative: {qty_dec}")
+
+        if period_start is None or period_end is None:
+            raise DjangoValidationError("Billing period dates are missing.")
+
+        if period_end < period_start:
+            raise DjangoValidationError(f"Period end date ({period_end}) cannot be before start date ({period_start}).")
 
         norm_context = {
             "factor_found":     True,
@@ -104,7 +139,7 @@ class BaseIngestionService:
             norm = normalize_record(
                 source_type=self.source_type,
                 category=fields["category"],
-                quantity_raw=Decimal(str(fields["quantity"])),
+                quantity_raw=qty_dec,
                 unit_raw=fields["unit"],
             )
             if fields["unit"] != norm["unit_normalized"]:
